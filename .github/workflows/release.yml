@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    # Only trigger on tags starting with 'v'
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:      
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          override: true
+      
+      # Add caching to speed up builds
+      - uses: Swatinem/rust-cache@v2
+      
+      - name: Build Release
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --release --locked
+
+      # Get version from tag
+      - name: Get version
+        id: get_version
+        shell: bash
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Rename binary (Windows)
+        if: matrix.os == 'windows-latest'
+        run: mv target/release/serendip-sisu-whitelister.exe target/release/serendip-sisu-whitelister-${{ steps.get_version.outputs.VERSION }}-windows.exe
+        
+      - name: Rename binary (MacOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          mv target/release/serendip-sisu-whitelister target/release/serendip-sisu-whitelister-${{ steps.get_version.outputs.VERSION }}-macos
+          codesign --force -s - target/release/serendip-sisu-whitelister-${{ steps.get_version.outputs.VERSION }}-macos
+
+      - name: Rename binary (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: mv target/release/serendip-sisu-whitelister target/release/serendip-sisu-whitelister-${{ steps.get_version.outputs.VERSION }}-linux
+        
+      - name: Store built binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.os }}
+          path: target/release/serendip-sisu-whitelister-*
+          retention-days: 5
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download built binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: ./binaries/
+          merge-multiple: true
+
+      # Generate SHA256 checksums for all binaries
+      - name: Generate checksums
+        run: |
+          cd binaries
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            ./binaries/*
+            ./binaries/SHA256SUMS.txt
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref, '-') }}
+    permissions:
+      contents: write 
